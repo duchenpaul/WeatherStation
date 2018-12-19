@@ -1,144 +1,124 @@
-/**
- * The MIT License (MIT)
- * Copyright (c) 2015 by Fabrice Weinberg
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/**The MIT License (MIT)
 
-#include "NTPClient.h"
+Copyright (c) 2015 by Daniel Eichhorn
 
-NTPClient::NTPClient(int timeOffset) {
-  this->_timeOffset     = timeOffset;
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+See more at http://blog.squix.ch
+*/
+
+#include "TimeClient.h"
+#include <math.h>
+
+TimeClient::TimeClient(float utcOffset) {
+  myUtcOffset = utcOffset;
 }
 
-NTPClient::NTPClient(const char* poolServerName) {
-  this->_poolServerName = poolServerName;
-}
-
-NTPClient::NTPClient(const char* poolServerName, int timeOffset) {
-  this->_timeOffset     = timeOffset;
-  this->_poolServerName = poolServerName;
-}
-
-NTPClient::NTPClient(const char* poolServerName, int timeOffset, int updateInterval) {
-  this->_timeOffset     = timeOffset;
-  this->_poolServerName = poolServerName;
-  this->_updateInterval = updateInterval;
-}
-
-void NTPClient::begin() {
-  #ifdef DEBUG_NTPClient
-    Serial.println("Begin NTPClient");
-    Serial.print("Start udp connection on port: ");
-    Serial.println(this->_port);
-  #endif
-  this->_udp.begin(this->_port);
-  this->forceUpdate();
-}
-
-void NTPClient::forceUpdate() {
-  #ifdef DEBUG_NTPClient
-    Serial.println("Update from NTP Server");
-  #endif
-
-  IPAddress address;
-  WiFi.hostByName(this->_poolServerName, address);
-
-  this->sendNTPPacket(address);
-
-  // Wait till data is there or timeout...
-  byte timeout = 0;
-  int cb = 0;
-  do {
-    delay ( 10 );
-    cb = this->_udp.parsePacket();
-    if (timeout > 100) return; // timeout after 1000 ms
-    timeout++;
-  } while (cb == 0);
-
-  this->_lastUpdate = millis() - (10 * (timeout + 1)); // Account for delay in reading the time
-
-  this->_udp.read(this->_packetBuffer, NTP_PACKET_SIZE);
-
-  unsigned long highWord = word(this->_packetBuffer[40], this->_packetBuffer[41]);
-  unsigned long lowWord = word(this->_packetBuffer[42], this->_packetBuffer[43]);
-  // combine the four bytes (two words) into a long integer
-  // this is NTP time (seconds since Jan 1 1900):
-  unsigned long secsSince1900 = highWord << 16 | lowWord;
-
-  this->_currentEpoc = secsSince1900 - SEVENZYYEARS;
-}
-
-void NTPClient::update() {
-  unsigned long runtime = millis();
-  if (runtime - this->_lastUpdate >= this->_updateInterval && this->_updateInterval != 0) {
-    this->forceUpdate();
+void TimeClient::updateTime() {
+  WiFiClient client;
+  const int httpPort = 80;
+  if (!client.connect("www.baidu.com", httpPort)) {
+    Serial.println("connection failed");
+    return;
   }
+  
+  // This will send the request to the server
+  client.print(String("GET / HTTP/1.1\r\n") +
+               String("Host: www.baidu.com\r\n") + 
+               String("Connection: close\r\n\r\n"));
+  int repeatCounter = 0;
+  while(!client.available() && repeatCounter < 10) {
+    delay(1000); 
+    Serial.println(".");
+    repeatCounter++;
+  }
+
+  String line;
+
+  int size = 0;
+  client.setNoDelay(false);
+  while(client.connected()) {
+    while((size = client.available()) > 0) {
+      line = client.readStringUntil('\n');
+      line.toUpperCase();
+      // example: 
+      // date: Thu, 19 Nov 2015 20:25:40 GMT
+      if (line.startsWith("DATE: ")) {
+        Serial.println(line.substring(23, 25) + ":" + line.substring(26, 28) + ":" +line.substring(29, 31));
+        int parsedHours = line.substring(23, 25).toInt();
+        int parsedMinutes = line.substring(26, 28).toInt();
+        int parsedSeconds = line.substring(29, 31).toInt();
+        Serial.println(String(parsedHours) + ":" + String(parsedMinutes) + ":" + String(parsedSeconds));
+
+        localEpoc = (parsedHours * 60 * 60 + parsedMinutes * 60 + parsedSeconds);
+        Serial.println(localEpoc);
+        localMillisAtUpdate = millis();
+      }
+    }
+  }
+
 }
 
-unsigned long NTPClient::getRawTime() {
-  return this->_timeOffset + // User offset
-         this->_currentEpoc + // Epoc returned by the NTP server
-         ((millis() - this->_lastUpdate) / 1000); // Time since last update
+String TimeClient::getHours() {
+    if (localEpoc == 0) {
+      return "--";
+    }
+    int hours = ((getCurrentEpochWithUtcOffset()  % 86400L) / 3600) % 24;
+    if (hours < 10) {
+      return "0" + String(hours);
+    }
+    return String(hours); // print the hour (86400 equals secs per day)
+
+}
+String TimeClient::getMinutes() {
+    if (localEpoc == 0) {
+      return "--";
+    }
+    int minutes = ((getCurrentEpochWithUtcOffset() % 3600) / 60);
+    if (minutes < 10 ) {
+      // In the first 10 minutes of each hour, we'll want a leading '0'
+      return "0" + String(minutes);
+    }
+    return String(minutes);
+}
+String TimeClient::getSeconds() {
+    if (localEpoc == 0) {
+      return "--";
+    }
+    int seconds = getCurrentEpochWithUtcOffset() % 60;
+    if ( seconds < 10 ) {
+      // In the first 10 seconds of each minute, we'll want a leading '0'
+      return "0" + String(seconds);
+    }
+    return String(seconds);
 }
 
-String NTPClient::getHours() {
-  return String((this->getRawTime()  % 86400L) / 3600);
-}
-String NTPClient::getMinutes() {
-  return String((this->getRawTime() % 3600) / 60);
+String TimeClient::getFormattedTime() {
+  return getHours() + ":" + getMinutes() + ":" + getSeconds();
 }
 
-String NTPClient::getSeconds() {
-  return String(this->getRawTime() % 60);
+long TimeClient::getCurrentEpoch() {
+  return localEpoc + ((millis() - localMillisAtUpdate) / 1000);
 }
 
-String NTPClient::getFormattedTime() {
-  unsigned long rawTime = this->getRawTime();
-  unsigned long hours = (rawTime % 86400L) / 3600;
-  String hoursStr = hours < 10 ? "0" + String(hours) : String(hours);
-
-  unsigned long minutes = (rawTime % 3600) / 60;
-  String minuteStr = minutes < 10 ? "0" + String(minutes) : String(minutes);
-
-  unsigned long seconds = rawTime % 60;
-  String secondStr = seconds < 10 ? "0" + String(seconds) : String(seconds);
-
-  return hoursStr + ":" + minuteStr + ":" + secondStr;
+long TimeClient::getCurrentEpochWithUtcOffset() {
+  return fmod(round(getCurrentEpoch() + 3600 * myUtcOffset + 86400L), 86400L);
 }
 
-void NTPClient::sendNTPPacket(IPAddress ip) {
-  // set all bytes in the buffer to 0
-  memset(this->_packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  this->_packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  this->_packetBuffer[1] = 0;     // Stratum, or type of clock
-  this->_packetBuffer[2] = 6;     // Polling Interval
-  this->_packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  this->_packetBuffer[12]  = 49;
-  this->_packetBuffer[13]  = 0x4E;
-  this->_packetBuffer[14]  = 49;
-  this->_packetBuffer[15]  = 52;
 
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  this->_udp.beginPacket(ip, 123); //NTP requests are to port 123
-  this->_udp.write(this->_packetBuffer, NTP_PACKET_SIZE);
-  this->_udp.endPacket();
-}
