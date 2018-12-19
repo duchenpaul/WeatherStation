@@ -24,6 +24,7 @@ See more at http://blog.squix.ch
 */
 
 #include "TimeClient.h"
+#include <math.h>
 
 TimeClient::TimeClient(float utcOffset) {
   myUtcOffset = utcOffset;
@@ -117,7 +118,6 @@ long TimeClient::getCurrentEpoch() {
 }
 
 long TimeClient::getCurrentEpochWithUtcOffset() {
-  return round(getCurrentEpoch() + 3600 * myUtcOffset + 86400L) % 86400L;
+  return fmod(round(getCurrentEpoch() + 3600 * myUtcOffset + 86400L), 86400L);
 }
-
 
